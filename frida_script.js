@@ -1,9 +1,10 @@
 'use strict'
 
-// some code from frizzer: https://github.com/demantz/frizzer
+// some code taken from frizzer: https://github.com/demantz/frizzer
 
 var shmat_addr = Module.findExportByName(null, "shmat");
 
+// TODO Android does not have shmat
 var shmat = new NativeFunction(shmat_addr, 'pointer', ['int', 'pointer', 'int']);
 
 var MAP_SIZE = 65536;
@@ -26,9 +27,7 @@ var maps = function() {
     var maps = Process.enumerateModulesSync();
     var i = 0;
     
-    /* Add an id to each module */
     maps.map(function(o) { o.id = i++; });
-    /* Add an end address to each module */
     maps.map(function(o) { o.end = o.base.add(o.size); });
 
     return maps;
@@ -50,8 +49,6 @@ rpc.exports = {
     
     },
 
-    /* Initialize the address of the target function (to-be-hooked) and attach
-       the Interceptor */
     settarget: function(target, max_len) {
         target_function = ptr(target);
 
@@ -66,7 +63,6 @@ rpc.exports = {
           cur_loc &= MAP_SIZE - 1;
 
           //afl_area[cur_loc ^ prev_loc]++;
-          
           var x = afl_area_ptr.add(cur_loc ^ prev_loc);
           x.writeU8((x.readU8() +1) & 0xff);
 
@@ -74,7 +70,67 @@ rpc.exports = {
 
         }
         
-        //var prev_loc_ptr = Memory.alloc(32);
+        var generic_transform = function (iterator) {
+        
+          var i = iterator.next();
+          
+          iterator.putCallout(afl_maybe_log);
+
+          do iterator.keep()
+          while ((i = iterator.next()) !== null);
+
+        }
+        
+        var transforms = {
+          "x64": function (iterator) {
+          
+            var i = iterator.next();
+            
+            var cur_loc = i.address;
+            cur_loc = cur_loc.shr(4).xor(cur_loc.shl(8));
+            cur_loc = cur_loc.and(MAP_SIZE - 1);
+            
+            iterator.putPushfx();
+            iterator.putPushReg("rdx");
+            iterator.putPushReg("rcx");
+            iterator.putPushReg("rbx");
+
+            // rdx = cur_loc
+            iterator.putMovRegAddress("rdx", cur_loc);
+            // rbx = &prev_loc
+            iterator.putMovRegAddress("rbx", prev_loc_ptr);
+            // rcx = *rbx
+            iterator.putMovRegRegPtr("rcx", "rbx");
+            // rcx ^= rdx
+            iterator.putXorRegReg("rcx", "rdx");
+            // rdx = cur_loc >> 1
+            iterator.putMovRegAddress("rdx", cur_loc.shr(1));
+            // *rbx = rdx
+            iterator.putMovRegPtrReg("rbx", "rdx");
+            // rbx = afl_area_ptr
+            iterator.putMovRegAddress("rbx", afl_area_ptr);
+            // rbx += rcx
+            iterator.putAddRegReg("rbx", "rcx");
+            // (*rbx)++
+            iterator.putU8(0xfe); // inc byte ptr [rbx]
+            iterator.putU8(0x03);
+         
+            iterator.putPopReg("rbx");
+            iterator.putPopReg("rcx");
+            iterator.putPopReg("rdx");
+            iterator.putPopfx();
+
+            do iterator.keep()
+            while ((i = iterator.next()) !== null);
+
+          },
+          // TODO inline ARM code
+          "ia32": generic_transform,
+          "arm": generic_transform,
+          "arm64": generic_transform
+        };
+        
+        var prev_loc_ptr = Memory.alloc(32);
         
         Stalker.follow(Process.getCurrentThreadId(), {
             events: {
@@ -85,51 +141,7 @@ rpc.exports = {
                 compile: true
             },
             
-          transform: function (iterator) {
-          
-            var i = iterator.next();
-            
-            // TODO inlined instrumentation x86_64
-            /*var cur_loc = i.address.toInt32();
-            cur_loc  = (cur_loc >> 4) ^ (cur_loc << 8);
-            cur_loc &= MAP_SIZE - 1;
-            
-            iterator.putPushfx();
-            iterator.putPushReg("rdx");
-            iterator.putPushReg("rcx");
-            iterator.putPushReg("rbx");
-
-            // rdx = cur_loc
-            iterator.putMovRegU32("rdx", cur_loc);
-            // rbx = &cur_loc
-            iterator.putMovRegAddress("rbx", prev_loc_ptr);
-            // rcx = *rbx
-            iterator.putMovRegRegPtr("rcx", "rbx");
-            // rcx ^= rdx
-            iterator.putXorRegReg("rcx", "rdx");
-            // rdx = cur_loc >> 1
-            iterator.putMovRegU32("rdx", cur_loc >> 1);
-            // *rbx = rdx
-            iterator.putMovRegPtrReg("rbx", "rdx");
-            // rbx = afl_area_ptr
-            iterator.putMovRegAddress("rbx", afl_area_ptr);
-            // rbx += rcx
-            iterator.putAddRegReg("rbx", "rcx");
-            // (*rbx)++
-            iterator.putU8(0xfe); // inc byte ptr [rbx]
-            iterator.putU8(0x03);
-            
-            iterator.putPopReg("rbx");
-            iterator.putPopReg("rcx");
-            iterator.putPopReg("rdx");
-            iterator.putPopfx();*/
-            
-            iterator.putCallout(afl_maybe_log);
-
-            do iterator.keep()
-            while ((i = iterator.next()) !== null);
-
-          },
+          transform: transforms[Process.arch],
         });
     },
 
@@ -139,7 +151,6 @@ rpc.exports = {
         if(target_function == undefined)
             return false;
 
-        // Create the function handle (specify type and number of arguments)
         func_handle = new NativeFunction(target_function, 'void', ['pointer', 'int']);
 
         // Prepare function arguments:
@@ -151,12 +162,10 @@ rpc.exports = {
             payload.push(parseInt(payload_hex.substring(i, i + 2), 16));
         }
 
-        // Prepare function arguments:
         payload = new Uint8Array(payload)
         
         Memory.writeByteArray(payload_memory, payload)
 
-        // Call the target
         var retval = func_handle(payload_memory, payload.length);
         
         return 0;
