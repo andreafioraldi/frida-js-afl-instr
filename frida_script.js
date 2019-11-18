@@ -1,5 +1,7 @@
 'use strict'
 
+var TARGET_MODULE = "test";
+
 // some code taken from frizzer: https://github.com/demantz/frizzer
 
 var shmat_addr = Module.findExportByName(null, "shmat");
@@ -33,6 +35,18 @@ var maps = function() {
     return maps;
 
 }();
+
+
+var start_addr = ptr(0);
+var end_addr = ptr("-1");
+
+maps.forEach(function(m) {
+  if (m.name == TARGET_MODULE) {
+    start_addr = m.base;
+    end_addr = m.end;
+  }
+});
+
 
 rpc.exports = {
 
@@ -74,7 +88,10 @@ rpc.exports = {
         
           var i = iterator.next();
           
-          iterator.putCallout(afl_maybe_log);
+          var cur_loc = i.address;
+          if (cur_loc.compare(start_addr) > 0 &&
+              cur_loc.compare(end_addr) < 0)
+            iterator.putCallout(afl_maybe_log);
 
           do iterator.keep()
           while ((i = iterator.next()) !== null);
@@ -87,38 +104,43 @@ rpc.exports = {
             var i = iterator.next();
             
             var cur_loc = i.address;
-            cur_loc = cur_loc.shr(4).xor(cur_loc.shl(8));
-            cur_loc = cur_loc.and(MAP_SIZE - 1);
+            if (cur_loc.compare(start_addr) > 0 &&
+                cur_loc.compare(end_addr) < 0) {
             
-            iterator.putPushfx();
-            iterator.putPushReg("rdx");
-            iterator.putPushReg("rcx");
-            iterator.putPushReg("rbx");
+              cur_loc = cur_loc.shr(4).xor(cur_loc.shl(8));
+              cur_loc = cur_loc.and(MAP_SIZE - 1);
+              
+              iterator.putPushfx();
+              iterator.putPushReg("rdx");
+              iterator.putPushReg("rcx");
+              iterator.putPushReg("rbx");
 
-            // rdx = cur_loc
-            iterator.putMovRegAddress("rdx", cur_loc);
-            // rbx = &prev_loc
-            iterator.putMovRegAddress("rbx", prev_loc_ptr);
-            // rcx = *rbx
-            iterator.putMovRegRegPtr("rcx", "rbx");
-            // rcx ^= rdx
-            iterator.putXorRegReg("rcx", "rdx");
-            // rdx = cur_loc >> 1
-            iterator.putMovRegAddress("rdx", cur_loc.shr(1));
-            // *rbx = rdx
-            iterator.putMovRegPtrReg("rbx", "rdx");
-            // rbx = afl_area_ptr
-            iterator.putMovRegAddress("rbx", afl_area_ptr);
-            // rbx += rcx
-            iterator.putAddRegReg("rbx", "rcx");
-            // (*rbx)++
-            iterator.putU8(0xfe); // inc byte ptr [rbx]
-            iterator.putU8(0x03);
-         
-            iterator.putPopReg("rbx");
-            iterator.putPopReg("rcx");
-            iterator.putPopReg("rdx");
-            iterator.putPopfx();
+              // rdx = cur_loc
+              iterator.putMovRegAddress("rdx", cur_loc);
+              // rbx = &prev_loc
+              iterator.putMovRegAddress("rbx", prev_loc_ptr);
+              // rcx = *rbx
+              iterator.putMovRegRegPtr("rcx", "rbx");
+              // rcx ^= rdx
+              iterator.putXorRegReg("rcx", "rdx");
+              // rdx = cur_loc >> 1
+              iterator.putMovRegAddress("rdx", cur_loc.shr(1));
+              // *rbx = rdx
+              iterator.putMovRegPtrReg("rbx", "rdx");
+              // rbx = afl_area_ptr
+              iterator.putMovRegAddress("rbx", afl_area_ptr);
+              // rbx += rcx
+              iterator.putAddRegReg("rbx", "rcx");
+              // (*rbx)++
+              iterator.putU8(0xfe); // inc byte ptr [rbx]
+              iterator.putU8(0x03);
+           
+              iterator.putPopReg("rbx");
+              iterator.putPopReg("rcx");
+              iterator.putPopReg("rdx");
+              iterator.putPopfx();
+            
+            }
 
             do iterator.keep()
             while ((i = iterator.next()) !== null);
@@ -132,17 +154,33 @@ rpc.exports = {
         
         var prev_loc_ptr = Memory.alloc(32);
         
-        Stalker.follow(Process.getCurrentThreadId(), {
-            events: {
-                call: false,
-                ret: false,
-                exec: false,
-                block: false,
-                compile: true
-            },
-            
-          transform: transforms[Process.arch],
+        /*Stalker.clearExclusions();*/
+        maps.forEach(function (m) {
+          if (m.name != TARGET_MODULE) {
+            Stalker.exclude(m);
+          }
         });
+        
+        Interceptor.attach(target_function, {
+            // This is a performance problem, wait for https://github.com/frida/frida/issues/1036
+            onEnter: function (args) {
+                Stalker.follow(Process.getCurrentThreadId(), {
+                  events: {
+                      call: false,
+                      ret: false,
+                      exec: false,
+                      block: false,
+                      compile: true
+                  },
+                  
+                transform: transforms[Process.arch],
+              });
+            },
+            onLeave: function (retval) {
+                Stalker.unfollow(Process.getCurrentThreadId())
+            }
+        });
+        
     },
 
     execute: function (payload_hex) {
@@ -168,8 +206,9 @@ rpc.exports = {
 
         var retval = func_handle(payload_memory, payload.length);
         
+        retval = func_handle(payload_memory, payload.length);
+        
         return 0;
-        return Memory.readByteArray(afl_area_ptr, MAP_SIZE);
     },
 };
 
