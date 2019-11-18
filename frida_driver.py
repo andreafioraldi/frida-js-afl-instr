@@ -10,7 +10,7 @@ TARGET_BIN = "./test"
 MAP_SIZE = 65536
 FORKSRV_FD = 198
 SHM_ENV_VAR = "__AFL_SHM_ID"
-MAX_LEN = 4096
+MAX_LEN = 10
 
 input_fname = None # use stdin
 if len(sys.argv) > 1:

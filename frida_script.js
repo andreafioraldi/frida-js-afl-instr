@@ -18,6 +18,7 @@ var afl_area_ptr = undefined;
 var target_function = undefined;
 
 var payload_memory = undefined;
+var zeroed_bytes = undefined;
 
 // Stalker tuning
 Stalker.trustThreshold = 0;
@@ -67,6 +68,7 @@ rpc.exports = {
         target_function = ptr(target);
 
         payload_memory = Memory.alloc(max_len);
+        zeroed_bytes = new Uint8Array(max_len);
 
         var prev_loc = 0;
         function afl_maybe_log (context) {
@@ -161,6 +163,8 @@ rpc.exports = {
           }
         });
         
+        var gc_cnt = 0;
+        
         Interceptor.attach(target_function, {
             // This is a performance problem, wait for https://github.com/frida/frida/issues/1036
             onEnter: function (args) {
@@ -179,6 +183,10 @@ rpc.exports = {
             onLeave: function (retval) {
                 Stalker.unfollow(Process.getCurrentThreadId())
                 Stalker.flush()
+                if(gc_cnt % 100 == 0){
+                    Stalker.garbageCollect();
+                }
+                gc_cnt++;
             }
         });
         
@@ -203,7 +211,8 @@ rpc.exports = {
 
         payload = new Uint8Array(payload)
         
-        Memory.writeByteArray(payload_memory, payload)
+        Memory.writeByteArray(payload_memory, zeroed_bytes);
+        Memory.writeByteArray(payload_memory, payload);
 
         var retval = func_handle(payload_memory, payload.length);
         
