@@ -216,8 +216,6 @@ rpc.exports = {
 
         var retval = func_handle(payload_memory, payload.length);
         
-        retval = func_handle(payload_memory, payload.length);
-        
         return 0;
     },
 };
