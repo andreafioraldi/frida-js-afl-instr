@@ -178,6 +178,7 @@ rpc.exports = {
             },
             onLeave: function (retval) {
                 Stalker.unfollow(Process.getCurrentThreadId())
+                Stalker.flush()
             }
         });
         
